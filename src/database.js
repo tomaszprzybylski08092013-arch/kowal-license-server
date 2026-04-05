@@ -1,37 +1,43 @@
-import Database from "better-sqlite3";
-import fs from "node:fs";
-import path from "node:path";
+import { Pool } from "pg";
 
-export function createDatabase(databasePath) {
-  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-  const db = new Database(databasePath);
-  db.pragma("journal_mode = WAL");
+export async function createDatabase(connectionString) {
+  const pool = new Pool({
+    connectionString,
+    ssl: connectionString.includes("localhost") || connectionString.includes("127.0.0.1")
+      ? false
+      : { rejectUnauthorized: false }
+  });
 
-  db.exec(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS licenses (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id BIGSERIAL PRIMARY KEY,
       license_key TEXT NOT NULL UNIQUE,
       duration_type TEXT NOT NULL,
       duration_value INTEGER,
-      created_at TEXT NOT NULL,
-      activated_at TEXT,
-      expires_at TEXT,
+      created_at TIMESTAMPTZ NOT NULL,
+      activated_at TIMESTAMPTZ,
+      expires_at TIMESTAMPTZ,
       status TEXT NOT NULL,
       bound_install_id TEXT,
       session_token TEXT,
       note TEXT
     );
+  `);
 
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS activations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      license_id INTEGER NOT NULL,
+      id BIGSERIAL PRIMARY KEY,
+      license_id BIGINT NOT NULL REFERENCES licenses(id) ON DELETE CASCADE,
       install_id TEXT NOT NULL,
-      activated_at TEXT NOT NULL,
-      mod_version TEXT,
-      FOREIGN KEY (license_id) REFERENCES licenses(id)
+      activated_at TIMESTAMPTZ NOT NULL,
+      mod_version TEXT
     );
   `);
 
-  return db;
-}
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_licenses_session_token
+    ON licenses (session_token);
+  `);
 
+  return pool;
+}

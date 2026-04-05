@@ -46,82 +46,59 @@ function normalizeStatus(license) {
   return license.status;
 }
 
+function mapLicense(license) {
+  if (!license) {
+    return null;
+  }
+
+  return {
+    ...license,
+    created_at: license.created_at?.toISOString?.() ?? license.created_at,
+    activated_at: license.activated_at?.toISOString?.() ?? license.activated_at,
+    expires_at: license.expires_at?.toISOString?.() ?? license.expires_at
+  };
+}
+
 export function createLicenseService(db) {
-  const insertLicense = db.prepare(`
-    INSERT INTO licenses (
-      license_key,
-      duration_type,
-      duration_value,
-      created_at,
-      status,
-      note
-    ) VALUES (?, ?, ?, ?, ?, ?)
-  `);
-
-  const findLicenseByKey = db.prepare(`
-    SELECT * FROM licenses WHERE license_key = ?
-  `);
-
-  const findLicenseBySession = db.prepare(`
-    SELECT * FROM licenses WHERE session_token = ?
-  `);
-
-  const updateLicenseActivation = db.prepare(`
-    UPDATE licenses
-    SET activated_at = ?,
-        expires_at = ?,
-        status = ?,
-        bound_install_id = ?,
-        session_token = ?
-    WHERE id = ?
-  `);
-
-  const updateSessionToken = db.prepare(`
-    UPDATE licenses
-    SET session_token = ?, status = ?
-    WHERE id = ?
-  `);
-
-  const expireLicense = db.prepare(`
-    UPDATE licenses
-    SET status = 'expired'
-    WHERE id = ?
-  `);
-
-  const revokeLicense = db.prepare(`
-    UPDATE licenses
-    SET status = 'revoked'
-    WHERE license_key = ?
-  `);
-
-  const insertActivation = db.prepare(`
-    INSERT INTO activations (license_id, install_id, activated_at, mod_version)
-    VALUES (?, ?, ?, ?)
-  `);
-
-  function createLicense({ durationType, durationValue, note }) {
+  async function createLicense({ durationType, durationValue, note }) {
     const licenseKey = generateLicenseKey();
-    insertLicense.run(
-      licenseKey,
-      durationType,
-      durationType === "lifetime" ? null : durationValue,
-      nowIso(),
-      "unused",
-      note ?? ""
+    await db.query(
+      `
+        INSERT INTO licenses (
+          license_key,
+          duration_type,
+          duration_value,
+          created_at,
+          status,
+          note
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+      `,
+      [
+        licenseKey,
+        durationType,
+        durationType === "lifetime" ? null : durationValue,
+        nowIso(),
+        "unused",
+        note ?? ""
+      ]
     );
 
     return getLicenseInfo(licenseKey);
   }
 
-  function getLicenseInfo(licenseKey) {
-    const license = findLicenseByKey.get(licenseKey);
+  async function getLicenseInfo(licenseKey) {
+    const result = await db.query(
+      `SELECT * FROM licenses WHERE license_key = $1`,
+      [licenseKey]
+    );
+    const license = mapLicense(result.rows[0]);
     if (!license) {
       return null;
     }
 
     const normalizedStatus = normalizeStatus(license);
     if (normalizedStatus === "expired" && license.status !== "expired") {
-      expireLicense.run(license.id);
+      await db.query(`UPDATE licenses SET status = 'expired' WHERE id = $1`, [license.id]);
       license.status = "expired";
     }
 
@@ -139,8 +116,12 @@ export function createLicenseService(db) {
     };
   }
 
-  function activateLicense({ licenseKey, installId, modVersion }) {
-    const license = findLicenseByKey.get(licenseKey);
+  async function activateLicense({ licenseKey, installId, modVersion }) {
+    const result = await db.query(
+      `SELECT * FROM licenses WHERE license_key = $1`,
+      [licenseKey]
+    );
+    const license = mapLicense(result.rows[0]);
     if (!license) {
       return { success: false, status: "invalid", message: "License key not found." };
     }
@@ -151,7 +132,7 @@ export function createLicenseService(db) {
     }
 
     if (normalizedStatus === "expired") {
-      expireLicense.run(license.id);
+      await db.query(`UPDATE licenses SET status = 'expired' WHERE id = $1`, [license.id]);
       return { success: false, status: "expired", message: "License expired." };
     }
 
@@ -165,17 +146,27 @@ export function createLicenseService(db) {
       : (license.expires_at ?? addDays(Number(license.duration_value ?? 0)));
     const sessionToken = generateSessionToken();
 
-    updateLicenseActivation.run(
-      activationTime,
-      expiresAt,
-      "active",
-      installId,
-      sessionToken,
-      license.id
+    await db.query(
+      `
+        UPDATE licenses
+        SET activated_at = $1,
+            expires_at = $2,
+            status = $3,
+            bound_install_id = $4,
+            session_token = $5
+        WHERE id = $6
+      `,
+      [activationTime, expiresAt, "active", installId, sessionToken, license.id]
     );
 
     if (!license.activated_at) {
-      insertActivation.run(license.id, installId, activationTime, modVersion ?? "");
+      await db.query(
+        `
+          INSERT INTO activations (license_id, install_id, activated_at, mod_version)
+          VALUES ($1, $2, $3, $4)
+        `,
+        [license.id, installId, activationTime, modVersion ?? ""]
+      );
     }
 
     return {
@@ -195,15 +186,19 @@ export function createLicenseService(db) {
     };
   }
 
-  function validateLicense({ sessionToken, installId, modVersion }) {
-    const license = findLicenseBySession.get(sessionToken);
+  async function validateLicense({ sessionToken, installId, modVersion }) {
+    const result = await db.query(
+      `SELECT * FROM licenses WHERE session_token = $1`,
+      [sessionToken]
+    );
+    const license = mapLicense(result.rows[0]);
     if (!license) {
       return { success: false, status: "invalid", message: "Unknown session." };
     }
 
     const normalizedStatus = normalizeStatus(license);
     if (normalizedStatus === "expired") {
-      expireLicense.run(license.id);
+      await db.query(`UPDATE licenses SET status = 'expired' WHERE id = $1`, [license.id]);
       return { success: false, status: "expired", message: "License expired." };
     }
 
@@ -216,7 +211,14 @@ export function createLicenseService(db) {
     }
 
     const refreshedToken = generateSessionToken();
-    updateSessionToken.run(refreshedToken, "active", license.id);
+    await db.query(
+      `
+        UPDATE licenses
+        SET session_token = $1, status = $2
+        WHERE id = $3
+      `,
+      [refreshedToken, "active", license.id]
+    );
 
     return {
       success: true,
@@ -234,9 +236,17 @@ export function createLicenseService(db) {
     };
   }
 
-  function revoke(licenseKey) {
-    const result = revokeLicense.run(licenseKey);
-    return result.changes > 0;
+  async function revoke(licenseKey) {
+    const result = await db.query(
+      `
+        UPDATE licenses
+        SET status = 'revoked'
+        WHERE license_key = $1
+      `,
+      [licenseKey]
+    );
+
+    return result.rowCount > 0;
   }
 
   return {
