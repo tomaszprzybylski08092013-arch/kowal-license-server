@@ -60,12 +60,13 @@ function mapLicense(license) {
 }
 
 export function createLicenseService(db) {
-  async function createLicense({ durationType, durationValue, note }) {
+  async function createLicense({ minecraftNick, durationType, durationValue, note }) {
     const licenseKey = generateLicenseKey();
     await db.query(
       `
         INSERT INTO licenses (
           license_key,
+          minecraft_nick,
           duration_type,
           duration_value,
           created_at,
@@ -75,6 +76,7 @@ export function createLicenseService(db) {
       `,
       [
         licenseKey,
+        minecraftNick,
         durationType,
         durationType === "lifetime" ? null : durationValue,
         nowIso(),
@@ -104,6 +106,7 @@ export function createLicenseService(db) {
 
     return {
       licenseKey: license.license_key,
+      minecraftNick: license.minecraft_nick,
       durationType: license.duration_type,
       durationValue: license.duration_value,
       createdAt: license.created_at,
@@ -113,6 +116,107 @@ export function createLicenseService(db) {
       boundInstallId: license.bound_install_id,
       note: license.note ?? "",
       licenseKeyMasked: maskLicenseKey(license.license_key)
+    };
+  }
+
+  async function getLicenseInfoByNickname(minecraftNick) {
+    const result = await db.query(
+      `
+        SELECT * FROM licenses
+        WHERE LOWER(minecraft_nick) = LOWER($1)
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [minecraftNick]
+    );
+
+    const license = mapLicense(result.rows[0]);
+    if (!license) {
+      return null;
+    }
+
+    const normalizedStatus = normalizeStatus(license);
+    if (normalizedStatus === "expired" && license.status !== "expired") {
+      await db.query(`UPDATE licenses SET status = 'expired' WHERE id = $1`, [license.id]);
+      license.status = "expired";
+    }
+
+    return {
+      licenseKey: license.license_key,
+      minecraftNick: license.minecraft_nick,
+      durationType: license.duration_type,
+      durationValue: license.duration_value,
+      createdAt: license.created_at,
+      activatedAt: license.activated_at,
+      expiresAt: license.expires_at,
+      status: normalizedStatus,
+      boundInstallId: license.bound_install_id,
+      note: license.note ?? "",
+      licenseKeyMasked: maskLicenseKey(license.license_key)
+    };
+  }
+
+  async function listLicenses({ status, page, pageSize }) {
+    const safePage = Math.max(1, Number(page) || 1);
+    const safePageSize = Math.max(1, Math.min(20, Number(pageSize) || 5));
+    const offset = (safePage - 1) * safePageSize;
+
+    const filters = [];
+    const values = [];
+
+    if (status === "active") {
+      filters.push(`status = 'active'`);
+    }
+
+    const whereClause = filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
+
+    const countResult = await db.query(
+      `SELECT COUNT(*)::int AS total FROM licenses ${whereClause}`,
+      values
+    );
+    const total = countResult.rows[0]?.total ?? 0;
+
+    const listResult = await db.query(
+      `
+        SELECT *
+        FROM licenses
+        ${whereClause}
+        ORDER BY created_at DESC
+        LIMIT $${values.length + 1}
+        OFFSET $${values.length + 2}
+      `,
+      [...values, safePageSize, offset]
+    );
+
+    const items = await Promise.all(listResult.rows.map(async rawLicense => {
+      const license = mapLicense(rawLicense);
+      const normalizedStatus = normalizeStatus(license);
+      if (normalizedStatus === "expired" && license.status !== "expired") {
+        await db.query(`UPDATE licenses SET status = 'expired' WHERE id = $1`, [license.id]);
+        license.status = "expired";
+      }
+
+      return {
+        licenseKey: license.license_key,
+        minecraftNick: license.minecraft_nick,
+        durationType: license.duration_type,
+        durationValue: license.duration_value,
+        createdAt: license.created_at,
+        activatedAt: license.activated_at,
+        expiresAt: license.expires_at,
+        status: normalizedStatus,
+        boundInstallId: license.bound_install_id,
+        note: license.note ?? "",
+        licenseKeyMasked: maskLicenseKey(license.license_key)
+      };
+    }));
+
+    return {
+      page: safePage,
+      pageSize: safePageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / safePageSize)),
+      items
     };
   }
 
@@ -254,6 +358,8 @@ export function createLicenseService(db) {
     activateLicense,
     validateLicense,
     getLicenseInfo,
+    getLicenseInfoByNickname,
+    listLicenses,
     revoke
   };
 }

@@ -34,7 +34,12 @@ async function main() {
   const licenseService = createLicenseService(db);
 
   app.post("/license/create", requireAdmin, async (req, res) => {
-  const { durationType, durationValue, note } = req.body ?? {};
+  const { minecraftNick, durationType, durationValue, note } = req.body ?? {};
+  if (!minecraftNick || typeof minecraftNick !== "string" || !minecraftNick.trim()) {
+    res.status(400).json({ success: false, message: "minecraftNick is required." });
+    return;
+  }
+
   if (!["days", "lifetime"].includes(durationType)) {
     res.status(400).json({ success: false, message: "Invalid duration type." });
     return;
@@ -45,7 +50,12 @@ async function main() {
     return;
   }
 
-  const license = await licenseService.createLicense({ durationType, durationValue, note });
+  const license = await licenseService.createLicense({
+    minecraftNick: minecraftNick.trim(),
+    durationType,
+    durationValue,
+    note
+  });
   res.json({ success: true, license });
   });
 
@@ -87,6 +97,23 @@ async function main() {
   }
 
   res.json({ success: true, license });
+  });
+
+  app.get("/license-by-nick/:minecraftNick", requireAdmin, async (req, res) => {
+    const license = await licenseService.getLicenseInfoByNickname(req.params.minecraftNick);
+    if (!license) {
+      res.status(404).json({ success: false, message: "License not found." });
+      return;
+    }
+
+    res.json({ success: true, license });
+  });
+
+  app.get("/licenses", requireAdmin, async (req, res) => {
+    const status = typeof req.query.status === "string" ? req.query.status : "all";
+    const page = typeof req.query.page === "string" ? Number(req.query.page) : 1;
+    const result = await licenseService.listLicenses({ status, page, pageSize: 5 });
+    res.json({ success: true, ...result });
   });
 
   app.post("/license/revoke", requireAdmin, async (req, res) => {
