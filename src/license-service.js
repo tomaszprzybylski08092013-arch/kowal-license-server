@@ -72,7 +72,7 @@ export function createLicenseService(db) {
           created_at,
           status,
           note
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
       `,
       [
         licenseKey,
