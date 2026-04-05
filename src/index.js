@@ -68,7 +68,11 @@ async function main() {
 
   const result = await licenseService.activateLicense({ licenseKey, installId, modVersion });
   if (result.event) {
-    await sendDiscordWebhook(discordWebhookUrl, result.event);
+    try {
+      await sendDiscordWebhook(discordWebhookUrl, result.event);
+    } catch (error) {
+      console.error("Discord webhook failed during license activation:", error);
+    }
   }
 
   res.json(result);
@@ -83,7 +87,11 @@ async function main() {
 
   const result = await licenseService.validateLicense({ sessionToken, installId, modVersion });
   if (result.event) {
-    await sendDiscordWebhook(discordWebhookUrl, result.event);
+    try {
+      await sendDiscordWebhook(discordWebhookUrl, result.event);
+    } catch (error) {
+      console.error("Discord webhook failed during license validation:", error);
+    }
   }
 
   res.json(result);
